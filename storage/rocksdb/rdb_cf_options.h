@@ -55,7 +55,8 @@ class Rdb_cf_options {
             std::shared_ptr<rocksdb::TablePropertiesCollectorFactory>
                 prop_coll_factory,
             const char *const default_cf_options,
-            const char *const override_cf_options);
+            const char *const override_cf_options,
+            const rocksdb::ConfigOptions &cfg_opts);
 
   const rocksdb::ColumnFamilyOptions &get_defaults() const {
     return m_default_cf_opts;
@@ -72,6 +73,7 @@ class Rdb_cf_options {
       MY_ATTRIBUTE((__nonnull__));
 
   static bool parse_cf_options(const std::string &cf_options,
+                               const rocksdb::ConfigOptions &cfg_opts,
                                Name_to_config_t *option_map);
 
  private:
@@ -99,6 +101,7 @@ class Rdb_cf_options {
   std::string m_default_config;
 
   rocksdb::ColumnFamilyOptions m_default_cf_opts;
+  rocksdb::ConfigOptions m_config_opts;
 };
 
 }  // namespace myrocks

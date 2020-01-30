@@ -44,10 +44,11 @@ bool Rdb_cf_options::init(
     const rocksdb::BlockBasedTableOptions &table_options,
     std::shared_ptr<rocksdb::TablePropertiesCollectorFactory> prop_coll_factory,
     const char *const default_cf_options,
-    const char *const override_cf_options) {
+    const char *const override_cf_options,
+    const rocksdb::ConfigOptions &cfg_opts) {
   DBUG_ASSERT(default_cf_options != nullptr);
   DBUG_ASSERT(override_cf_options != nullptr);
-
+  m_config_opts = cfg_opts;
   m_default_cf_opts.comparator = &s_pk_comparator;
   m_default_cf_opts.compaction_filter_factory.reset(
       new Rdb_compact_filter_factory);
@@ -73,13 +74,13 @@ void Rdb_cf_options::get(const std::string &cf_name,
   DBUG_ASSERT(opts != nullptr);
 
   // Get defaults.
-  rocksdb::GetColumnFamilyOptionsFromString(*opts, m_default_config, opts);
+  rocksdb::GetColumnFamilyOptionsFromString(*opts, m_default_config, m_config_opts, opts);
 
   // Get a custom confguration if we have one.
   Name_to_config_t::iterator it = m_name_map.find(cf_name);
 
   if (it != m_name_map.end()) {
-    rocksdb::GetColumnFamilyOptionsFromString(*opts, it->second, opts);
+    rocksdb::GetColumnFamilyOptionsFromString(*opts, it->second, m_config_opts, opts);
   }
 }
 
@@ -97,9 +98,9 @@ void Rdb_cf_options::update(const std::string &cf_name,
 bool Rdb_cf_options::set_default(const std::string &default_config) {
   rocksdb::ColumnFamilyOptions options;
 
-  if (!default_config.empty() && !rocksdb::GetColumnFamilyOptionsFromString(
-                                      options, default_config, &options)
-                                      .ok()) {
+  if (!default_config.empty() &&
+      !rocksdb::GetColumnFamilyOptionsFromString(options, default_config,
+                                                 m_config_opts, &options).ok()) {
     // NO_LINT_DEBUG
     fprintf(stderr, "Invalid default column family config: %s\n",
             default_config.c_str());
@@ -254,6 +255,7 @@ bool Rdb_cf_options::find_cf_options_pair(const std::string &input,
 }
 
 bool Rdb_cf_options::parse_cf_options(const std::string &cf_options,
+                                      const rocksdb::ConfigOptions &cfg_opts,
                                       Name_to_config_t *option_map) {
   std::string cf;
   std::string opt_str;
@@ -281,8 +283,8 @@ bool Rdb_cf_options::parse_cf_options(const std::string &cf_options,
     }
 
     // Generate an error if the <opt_str> is not valid according to RocksDB.
-    if (!rocksdb::GetColumnFamilyOptionsFromString(options, opt_str, &options)
-             .ok()) {
+    if (!rocksdb::GetColumnFamilyOptionsFromString(options, opt_str,
+                                                   cfg_opts, &options).ok()) {
       // NO_LINT_DEBUG
       sql_print_warning(
           "Invalid cf config for %s in override options (options: %s)",
@@ -300,7 +302,7 @@ bool Rdb_cf_options::parse_cf_options(const std::string &cf_options,
 bool Rdb_cf_options::set_override(const std::string &override_config) {
   Name_to_config_t configs;
 
-  if (!parse_cf_options(override_config, &configs)) {
+  if (!parse_cf_options(override_config, m_config_opts, &configs)) {
     return false;
   }
 

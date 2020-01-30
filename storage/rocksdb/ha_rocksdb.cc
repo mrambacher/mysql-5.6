@@ -64,6 +64,7 @@
 #include "rocksdb/utilities/checkpoint.h"
 #include "rocksdb/utilities/convenience.h"
 #include "rocksdb/utilities/memory_util.h"
+#include "rocksdb/utilities/object_registry.h"
 #include "rocksdb/utilities/sim_cache.h"
 #include "rocksdb/utilities/write_batch_with_index.h"
 #include "util/stop_watch.h"
@@ -231,7 +232,9 @@ static rocksdb::CompactRangeOptions getCompactRangeOptions(
 static char *rocksdb_default_cf_options = nullptr;
 static char *rocksdb_override_cf_options = nullptr;
 static char *rocksdb_update_cf_options = nullptr;
-
+static char *rocksdb_env_options = nullptr;
+static char *rocksdb_registry_options = nullptr;
+  
 ///////////////////////////////////////////////////////////
 // Globals
 ///////////////////////////////////////////////////////////
@@ -834,6 +837,8 @@ static std::unique_ptr<rocksdb::BlockBasedTableOptions> rocksdb_tbl_options =
         new rocksdb::BlockBasedTableOptions());
 static std::unique_ptr<rocksdb::DBOptions> rocksdb_db_options =
     rdb_init_rocksdb_db_options();
+// Guard for a RocksDB Env, if one is configured
+std::shared_ptr<rocksdb::Env> rocksdb_env_guard;
 
 static std::shared_ptr<rocksdb::RateLimiter> rocksdb_rate_limiter;
 
@@ -1708,6 +1713,14 @@ static MYSQL_SYSVAR_STR(update_cf_options, rocksdb_update_cf_options,
                         rocksdb_validate_update_cf_options,
                         rocksdb_set_update_cf_options, nullptr);
 
+static MYSQL_SYSVAR_STR(object_registry_options, rocksdb_registry_options,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+                        "options for RocksDB object registry", nullptr, nullptr, "");
+
+static MYSQL_SYSVAR_STR(env_options, rocksdb_env_options,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+                        "options for RocksDB environment", nullptr, nullptr, "");
+
 static MYSQL_SYSVAR_UINT(flush_log_at_trx_commit,
                          rocksdb_flush_log_at_trx_commit, PLUGIN_VAR_RQCMDARG,
                          "Sync on transaction commit. Similar to "
@@ -2241,6 +2254,9 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
     MYSQL_SYSVAR(default_cf_options),
     MYSQL_SYSVAR(override_cf_options),
     MYSQL_SYSVAR(update_cf_options),
+
+    MYSQL_SYSVAR(object_registry_options),
+    MYSQL_SYSVAR(env_options),
 
     MYSQL_SYSVAR(flush_log_at_trx_commit),
     MYSQL_SYSVAR(write_disable_wal),
@@ -4722,21 +4738,15 @@ static bool rocksdb_show_status(handlerton *const hton, THD *const thd,
       auto *const table_factory = cf_desc.options.table_factory.get();
 
       if (table_factory != nullptr) {
-        std::string tf_name = table_factory->Name();
-
-        if (tf_name.find("BlockBasedTable") != std::string::npos) {
-          const rocksdb::BlockBasedTableOptions *const bbt_opt =
-              reinterpret_cast<rocksdb::BlockBasedTableOptions *>(
-                  table_factory->GetOptions());
-
-          if (bbt_opt != nullptr) {
-            if (bbt_opt->block_cache.get() != nullptr) {
-              cache_set.insert(bbt_opt->block_cache.get());
-            } else {
-              internal_cache_count++;
-            }
-            cache_set.insert(bbt_opt->block_cache_compressed.get());
+        const auto *const bbt_opt = table_factory->GetOptions
+            <rocksdb::BlockBasedTableOptions>(rocksdb::TableFactory::kBlockBasedTableOpts);
+        if (bbt_opt != nullptr) {
+          if (bbt_opt->block_cache.get() != nullptr) {
+            cache_set.insert(bbt_opt->block_cache.get());
+          } else {
+            internal_cache_count++;
           }
+          cache_set.insert(bbt_opt->block_cache_compressed.get());
         }
       }
     }
@@ -5276,6 +5286,36 @@ static int rocksdb_init_func(void *const p) {
                         HTON_SUPPORTS_EXTENDED_KEYS | HTON_CAN_RECREATE;
 
   DBUG_ASSERT(!mysqld_embedded);
+  rocksdb::ConfigOptions rocksdb_cfg_opts(*rocksdb_db_options);
+  if (strlen(rocksdb_registry_options) > 0) {
+    rocksdb::Status s = rocksdb_cfg_opts.registry->ConfigureFromString(rocksdb_db_options->env,
+                                                                       rocksdb_registry_options);
+    if (!s.ok()) {
+      sql_print_error("RocksDB: Can't load object registry(%s): %s\n",
+                      rocksdb_registry_options, s.ToString().c_str());
+      DBUG_RETURN(HA_EXIT_FAILURE);
+    }
+  }
+  sql_print_information(
+                        "MJR: Loaded object registry %p/%p =%s",
+                        rocksdb_cfg_opts.registry.get(), rocksdb_db_options->object_registry.get(),
+                        rocksdb_cfg_opts.registry->ToString().c_str());
+  rocksdb_cfg_opts.registry->Dump(rocksdb_db_options->info_log.get()); //MJR
+  
+  if (strlen(rocksdb_env_options) > 0) {
+  sql_print_information(
+                        "MJR: Creating env =%s",rocksdb_env_options);
+    rocksdb::Status s = rocksdb::Env::CreateFromString(rocksdb_env_options, rocksdb_cfg_opts,
+                                                       &rocksdb_db_options->env, &rocksdb_env_guard);
+    if (s.ok()) {
+      s = rocksdb_db_options->env->SanitizeOptions(*rocksdb_db_options);
+    } 
+    if (!s.ok()) {
+      sql_print_error("RocksDB: Can't load custom environment(%s): %s\n",
+                      rocksdb_env_options, s.ToString().c_str());
+      DBUG_RETURN(HA_EXIT_FAILURE);
+    }
+  }
 
   if (rocksdb_db_options->max_open_files > (long)open_files_limit) {
     // NO_LINT_DEBUG
@@ -5507,7 +5547,8 @@ static int rocksdb_init_func(void *const p) {
   std::unique_ptr<Rdb_cf_options> cf_options_map(new Rdb_cf_options());
   if (!cf_options_map->init(*rocksdb_tbl_options, properties_collector_factory,
                             rocksdb_default_cf_options,
-                            rocksdb_override_cf_options)) {
+                            rocksdb_override_cf_options,
+                            rocksdb_cfg_opts)) {
     // NO_LINT_DEBUG
     sql_print_error("RocksDB: Failed to initialize CF options map.");
     DBUG_RETURN(HA_EXIT_FAILURE);
@@ -14882,7 +14923,8 @@ static int rocksdb_validate_update_cf_options(
 
   // Basic sanity checking and parsing the options into a map. If this fails
   // then there's no point to proceed.
-  if (!Rdb_cf_options::parse_cf_options(str, &option_map)) {
+  rocksdb::ConfigOptions cfg_opts(*rocksdb_db_options);
+  if (!Rdb_cf_options::parse_cf_options(str, cfg_opts, &option_map)) {
     my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), "rocksdb_update_cf_options", str);
     return HA_EXIT_FAILURE;
   }
@@ -14941,7 +14983,8 @@ static void rocksdb_set_update_cf_options(
   Rdb_cf_options::Name_to_config_t option_map;
 
   // This should never fail, because of rocksdb_validate_update_cf_options
-  if (!Rdb_cf_options::parse_cf_options(val, &option_map)) {
+  rocksdb::ConfigOptions cfg_opts(*rocksdb_db_options);
+  if (!Rdb_cf_options::parse_cf_options(val, cfg_opts, &option_map)) {
     RDB_MUTEX_UNLOCK_CHECK(rdb_sysvars_mutex);
     return;
   }
