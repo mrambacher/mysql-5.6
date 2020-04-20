@@ -233,6 +233,7 @@ static char *rocksdb_default_cf_options = nullptr;
 static char *rocksdb_override_cf_options = nullptr;
 static char *rocksdb_update_cf_options = nullptr;
 static char *rocksdb_env_options = nullptr;
+static char *rocksdb_plugin_options = nullptr;
 static char *rocksdb_registry_options = nullptr;
   
 ///////////////////////////////////////////////////////////
@@ -1720,6 +1721,10 @@ static MYSQL_SYSVAR_STR(object_registry_options, rocksdb_registry_options,
 static MYSQL_SYSVAR_STR(env_options, rocksdb_env_options,
                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
                         "options for RocksDB environment", nullptr, nullptr, "");
+
+static MYSQL_SYSVAR_STR(env_options, rocksdb_plugin_options,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+                        "DB plugin extension options for RocksDB environment", nullptr, nullptr, "");
 
 static MYSQL_SYSVAR_UINT(flush_log_at_trx_commit,
                          rocksdb_flush_log_at_trx_commit, PLUGIN_VAR_RQCMDARG,
@@ -5307,15 +5312,33 @@ static int rocksdb_init_func(void *const p) {
                         "MJR: Creating env =%s",rocksdb_env_options);
     rocksdb::Status s = rocksdb::Env::CreateFromString(rocksdb_env_options, rocksdb_cfg_opts,
                                                        &rocksdb_db_options->env, &rocksdb_env_guard);
-    if (s.ok()) {
-      s = rocksdb_db_options->env->SanitizeOptions(*rocksdb_db_options);
-    } 
     if (!s.ok()) {
       sql_print_error("RocksDB: Can't load custom environment(%s): %s\n",
                       rocksdb_env_options, s.ToString().c_str());
       DBUG_RETURN(HA_EXIT_FAILURE);
     }
   }
+
+  if (strlen(rocksdb_plugin_options) > 0) {
+    for (size_t start = 0, end = 0;
+         start < value.size() && end != std::string::npos;
+         start = end + 1) {
+      std::shared_ptr<rocksdb::DBPlugin> plugin;
+      std::string token;
+      rocksdb::s = OptionTypeInfo::NextToken(rocksdb_plugin_options, ':', start, &end, &token);
+      if (s.ok()) {
+        sql_print_information("MJR: Creating plugin =%s",token.c_str());
+        s = DBPlugin::CreateFromString(token, rocsdb_cfg_opts, &plugin);
+      }
+      if (s.ok()) {
+        rocksdb_db_options->plugins.push_back(plugin);
+      } else {
+        sql_print_error("RocksDB: Can't load plugin (%s): %s\n",
+                      token, s.ToString().c_str());
+        DBUG_RETURN(HA_EXIT_FAILURE);
+      }
+    }
+  } // End plugin_optins
 
   if (rocksdb_db_options->max_open_files > (long)open_files_limit) {
     // NO_LINT_DEBUG
