@@ -2265,7 +2265,7 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
 
     MYSQL_SYSVAR(object_registry_options),
     MYSQL_SYSVAR(env_options),
-    MYSQL_SYSVAR(plugin_options),
+    MYSQL_SYSVAR(db_plugin_options),
 
     MYSQL_SYSVAR(flush_log_at_trx_commit),
     MYSQL_SYSVAR(write_disable_wal),
@@ -5330,7 +5330,7 @@ static int rocksdb_init_func(void *const p) {
       rocksdb::Status s = OptionTypeInfo::NextToken(value, ':', start, &end, &token);
       if (s.ok()) {
         sql_print_information("MJR: Creating plugin =%s",token.c_str());
-        s = DBPlugin::CreateFromString(token, rocsdb_cfg_opts, &plugin);
+        s = DBPlugin::CreateFromString(token, rocksdb_cfg_opts, &plugin);
       }
       if (s.ok()) {
         rocksdb_db_options->plugins.push_back(plugin);
