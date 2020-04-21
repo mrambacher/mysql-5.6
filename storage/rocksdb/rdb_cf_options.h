@@ -21,6 +21,7 @@
 #include <unordered_map>
 
 /* RocksDB header files */
+#include "rocksdb/convenience.h"
 #include "rocksdb/table.h"
 #include "rocksdb/utilities/options_util.h"
 

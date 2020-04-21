@@ -54,6 +54,8 @@
 /* RocksDB includes */
 #include "monitoring/histogram.h"
 #include "rocksdb/compaction_filter.h"
+#include "rocksdb/convenience.h"
+#include "rocksdb/db_plugin.h"
 #include "rocksdb/env.h"
 #include "rocksdb/memory_allocator.h"
 #include "rocksdb/persistent_cache.h"
@@ -65,6 +67,7 @@
 #include "rocksdb/utilities/convenience.h"
 #include "rocksdb/utilities/memory_util.h"
 #include "rocksdb/utilities/object_registry.h"
+#include "rocksdb/utilities/options_type.h"
 #include "rocksdb/utilities/sim_cache.h"
 #include "rocksdb/utilities/write_batch_with_index.h"
 #include "util/stop_watch.h"
@@ -1722,7 +1725,7 @@ static MYSQL_SYSVAR_STR(env_options, rocksdb_env_options,
                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
                         "options for RocksDB environment", nullptr, nullptr, "");
 
-static MYSQL_SYSVAR_STR(env_options, rocksdb_plugin_options,
+static MYSQL_SYSVAR_STR(db_plugin_options, rocksdb_plugin_options,
                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
                         "DB plugin extension options for RocksDB environment", nullptr, nullptr, "");
 
@@ -5293,19 +5296,15 @@ static int rocksdb_init_func(void *const p) {
   DBUG_ASSERT(!mysqld_embedded);
   rocksdb::ConfigOptions rocksdb_cfg_opts(*rocksdb_db_options);
   if (strlen(rocksdb_registry_options) > 0) {
-    rocksdb::Status s = rocksdb_cfg_opts.registry->ConfigureFromString(rocksdb_db_options->env,
-                                                                       rocksdb_registry_options);
+    rocksdb::Status s = rocksdb_cfg_opts.registry->ConfigureFromString(rocksdb_registry_options,
+                                                                       rocksdb_cfg_opts);
     if (!s.ok()) {
       sql_print_error("RocksDB: Can't load object registry(%s): %s\n",
                       rocksdb_registry_options, s.ToString().c_str());
       DBUG_RETURN(HA_EXIT_FAILURE);
     }
+    rocksdb_cfg_opts.registry = rocksdb_db_options->object_registry;
   }
-  sql_print_information(
-                        "MJR: Loaded object registry %p/%p =%s",
-                        rocksdb_cfg_opts.registry.get(), rocksdb_db_options->object_registry.get(),
-                        rocksdb_cfg_opts.registry->ToString().c_str());
-  rocksdb_cfg_opts.registry->Dump(rocksdb_db_options->info_log.get()); //MJR
   
   if (strlen(rocksdb_env_options) > 0) {
   sql_print_information(
@@ -5317,15 +5316,17 @@ static int rocksdb_init_func(void *const p) {
                       rocksdb_env_options, s.ToString().c_str());
       DBUG_RETURN(HA_EXIT_FAILURE);
     }
+    rocksdb_cfg_opts.env = rocksdb_db_options->env;
   }
 
   if (strlen(rocksdb_plugin_options) > 0) {
+    std::string value(rocksdb_plugin_options);
     for (size_t start = 0, end = 0;
          start < value.size() && end != std::string::npos;
          start = end + 1) {
       std::shared_ptr<rocksdb::DBPlugin> plugin;
       std::string token;
-      rocksdb::s = OptionTypeInfo::NextToken(rocksdb_plugin_options, ':', start, &end, &token);
+      rocksdb::Status s = OptionTypeInfo::NextToken(value, ':', start, &end, &token);
       if (s.ok()) {
         sql_print_information("MJR: Creating plugin =%s",token.c_str());
         s = DBPlugin::CreateFromString(token, rocsdb_cfg_opts, &plugin);
@@ -5334,7 +5335,7 @@ static int rocksdb_init_func(void *const p) {
         rocksdb_db_options->plugins.push_back(plugin);
       } else {
         sql_print_error("RocksDB: Can't load plugin (%s): %s\n",
-                      token, s.ToString().c_str());
+                        token.c_str(), s.ToString().c_str());
         DBUG_RETURN(HA_EXIT_FAILURE);
       }
     }
