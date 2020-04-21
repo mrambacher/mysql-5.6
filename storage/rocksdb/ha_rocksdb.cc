@@ -2265,6 +2265,7 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
 
     MYSQL_SYSVAR(object_registry_options),
     MYSQL_SYSVAR(env_options),
+    MYSQL_SYSVAR(plugin_options),
 
     MYSQL_SYSVAR(flush_log_at_trx_commit),
     MYSQL_SYSVAR(write_disable_wal),
