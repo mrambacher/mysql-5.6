@@ -5327,10 +5327,10 @@ static int rocksdb_init_func(void *const p) {
          start = end + 1) {
       std::shared_ptr<rocksdb::DBPlugin> plugin;
       std::string token;
-      rocksdb::Status s = OptionTypeInfo::NextToken(value, ':', start, &end, &token);
+      rocksdb::Status s = rocksdb::OptionTypeInfo::NextToken(value, ':', start, &end, &token);
       if (s.ok()) {
         sql_print_information("MJR: Creating plugin =%s",token.c_str());
-        s = DBPlugin::CreateFromString(token, rocksdb_cfg_opts, &plugin);
+        s = rocksdb::DBPlugin::CreateFromString(token, rocksdb_cfg_opts, &plugin);
       }
       if (s.ok()) {
         rocksdb_db_options->plugins.push_back(plugin);
