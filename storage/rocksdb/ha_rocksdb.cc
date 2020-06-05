@@ -5297,8 +5297,8 @@ static int rocksdb_init_func(void *const p) {
   DBUG_ASSERT(!mysqld_embedded);
   rocksdb::ConfigOptions rocksdb_cfg_opts(*rocksdb_db_options);
   if (strlen(rocksdb_registry_options) > 0) {
-    rocksdb::Status s = rocksdb_cfg_opts.registry->ConfigureFromString(rocksdb_registry_options,
-                                                                       rocksdb_cfg_opts);
+    rocksdb::Status s = rocksdb_cfg_opts.registry->ConfigureFromString(rocksdb_cfg_opts,
+                                                                       rocksdb_registry_options);
     if (!s.ok()) {
       sql_print_error("RocksDB: Can't load object registry(%s): %s\n",
                       rocksdb_registry_options, s.ToString().c_str());
@@ -5310,7 +5310,7 @@ static int rocksdb_init_func(void *const p) {
   if (strlen(rocksdb_env_options) > 0) {
   sql_print_information(
                         "MJR: Creating env =%s",rocksdb_env_options);
-    rocksdb::Status s = rocksdb::Env::CreateFromString(rocksdb_env_options, rocksdb_cfg_opts,
+    rocksdb::Status s = rocksdb::Env::CreateFromString(rocksdb_cfg_opts, rocksdb_env_options,
                                                        &rocksdb_db_options->env, &rocksdb_env_guard);
     if (!s.ok()) {
       sql_print_error("RocksDB: Can't load custom environment(%s): %s\n",
@@ -5330,7 +5330,7 @@ static int rocksdb_init_func(void *const p) {
       rocksdb::Status s = rocksdb::OptionTypeInfo::NextToken(value, ':', start, &end, &token);
       if (s.ok()) {
         sql_print_information("MJR: Creating plugin =%s",token.c_str());
-        s = rocksdb::DBPlugin::CreateFromString(token, rocksdb_cfg_opts, &plugin);
+        s = rocksdb::DBPlugin::CreateFromString(rocksdb_cfg_opts, token, &plugin);
       }
       if (s.ok()) {
         rocksdb_db_options->plugins.push_back(plugin);
